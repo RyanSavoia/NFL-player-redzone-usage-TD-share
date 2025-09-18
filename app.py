@@ -339,133 +339,116 @@ scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
 logger.info("Background scheduler started - daily refresh at 6:00 AM UTC")
 
-# Flask Integration
-try:
-    from flask import Flask, jsonify, request
-    from flask_cors import CORS
-    
-    app = Flask(__name__)
-    CORS(app)  # Enable CORS for all routes
-    
-    @app.route('/player-usage', methods=['GET'])
-    def get_player_usage():
-        """Get player usage data for all teams or specific team"""
-        try:
-            team = request.args.get('team')  # Optional team parameter
-            
-            if team:
-                # Get data for specific team
-                team_data = player_service.get_team_player_usage(team.upper())
-                return jsonify(team_data)
-            else:
-                # Get data for all teams
-                all_data = player_service.get_all_teams_usage()
-                return jsonify(all_data)
-                
-        except Exception as e:
-            logger.error(f"Error in player usage endpoint: {str(e)}")
-            return jsonify({
-                "error": str(e),
-                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }), 500
+from flask import Flask, jsonify, request
+from flask_cors import CORS
 
-    @app.route('/player-usage/<team>', methods=['GET'])
-    def get_team_player_usage_route(team):
-        """Get player usage data for a specific team"""
-        try:
+app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
+    
+@app.route('/player-usage', methods=['GET'])
+def get_player_usage():
+    """Get player usage data for all teams or specific team"""
+    try:
+        team = request.args.get('team')  # Optional team parameter
+        
+        if team:
+            # Get data for specific team
             team_data = player_service.get_team_player_usage(team.upper())
             return jsonify(team_data)
-        except Exception as e:
-            logger.error(f"Error in team player usage endpoint for {team}: {str(e)}")
-            return jsonify({
-                "error": str(e),
-                "team": team,
-                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }), 500
-
-    @app.route('/refresh', methods=['POST'])
-    def refresh_data():
-        """Manual data refresh endpoint"""
-        try:
-            global player_service
-            player_service = PlayerUsageService()  # Reset service to reload data
-            return jsonify({
-                "status": "success",
-                "message": "Data refreshed successfully",
-                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                "data_loaded": player_service.data_loaded
-            })
-        except Exception as e:
-            logger.error(f"Error in refresh endpoint: {str(e)}")
-            return jsonify({
-                "status": "error",
-                "message": str(e),
-                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }), 500
-
-    @app.route('/health', methods=['GET'])
-    def health_check():
-        """Health check endpoint"""
+        else:
+            # Get data for all teams
+            all_data = player_service.get_all_teams_usage()
+            return jsonify(all_data)
+            
+    except Exception as e:
+        logger.error(f"Error in player usage endpoint: {str(e)}")
         return jsonify({
-            "status": "healthy" if player_service.data_loaded else "degraded",
-            "service": "Player Usage Service",
+            "error": str(e),
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }), 500
+
+@app.route('/player-usage/<team>', methods=['GET'])
+def get_team_player_usage_route(team):
+    """Get player usage data for a specific team"""
+    try:
+        team_data = player_service.get_team_player_usage(team.upper())
+        return jsonify(team_data)
+    except Exception as e:
+        logger.error(f"Error in team player usage endpoint for {team}: {str(e)}")
+        return jsonify({
+            "error": str(e),
+            "team": team,
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }), 500
+
+@app.route('/refresh', methods=['POST'])
+def refresh_data():
+    """Manual data refresh endpoint"""
+    try:
+        global player_service
+        player_service = PlayerUsageService()  # Reset service to reload data
+        return jsonify({
+            "status": "success",
+            "message": "Data refreshed successfully",
             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "data_loaded": player_service.data_loaded if player_service else False,
-            "scheduled_refresh": "Daily at 6:00 AM UTC",
-            "next_refresh": schedule.next_run().strftime('%Y-%m-%d %H:%M:%S UTC') if schedule.jobs else None
+            "data_loaded": player_service.data_loaded
         })
-
-    @app.route('/', methods=['GET'])
-    def root():
-        """API documentation"""
+    except Exception as e:
+        logger.error(f"Error in refresh endpoint: {str(e)}")
         return jsonify({
-            "service": "Player Usage Service",
-            "description": "Calculates player red zone usage shares and TD shares following GPT guidelines",
-            "status": "running",
-            "data_loaded": player_service.data_loaded if player_service else False,
-            "endpoints": {
-                "/player-usage": {
-                    "method": "GET",
-                    "description": "Get all teams player usage data",
-                    "parameters": {
-                        "team": "Optional - get data for specific team (e.g., ?team=KC)"
-                    }
-                },
-                "/player-usage/<team>": {
-                    "method": "GET",
-                    "description": "Get player usage data for specific team",
-                    "example": "/player-usage/KC"
-                },
-                "/refresh": {
-                    "method": "POST",
-                    "description": "Manual data refresh"
-                },
-                "/health": {
-                    "method": "GET",
-                    "description": "Health check"
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }), 500
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy" if player_service.data_loaded else "degraded",
+        "service": "Player Usage Service",
+        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        "data_loaded": player_service.data_loaded if player_service else False,
+        "scheduled_refresh": "Daily at 6:00 AM UTC",
+        "next_refresh": schedule.next_run().strftime('%Y-%m-%d %H:%M:%S UTC') if schedule.jobs else None
+    })
+
+@app.route('/', methods=['GET'])
+def root():
+    """API documentation"""
+    return jsonify({
+        "service": "Player Usage Service",
+        "description": "Calculates player red zone usage shares and TD shares following GPT guidelines",
+        "status": "running",
+        "data_loaded": player_service.data_loaded if player_service else False,
+        "endpoints": {
+            "/player-usage": {
+                "method": "GET",
+                "description": "Get all teams player usage data",
+                "parameters": {
+                    "team": "Optional - get data for specific team (e.g., ?team=KC)"
                 }
             },
-            "methodology": {
-                "rz_usage_share": "Player share of team RZ opportunities with 2+ plays filter, no 2-pt conversions",
-                "td_share": "Player share of team TDs (rush + receiving)",
-                "notes": "Uses player IDs to avoid name collisions, accumulates across position types"
+            "/player-usage/<team>": {
+                "method": "GET",
+                "description": "Get player usage data for specific team",
+                "example": "/player-usage/KC"
+            },
+            "/refresh": {
+                "method": "POST",
+                "description": "Manual data refresh"
+            },
+            "/health": {
+                "method": "GET",
+                "description": "Health check"
             }
-        })
-
-    def run_flask_app():
-        """Run Flask application"""
-        port = int(os.environ.get('PORT', 5000))
-        debug = os.environ.get('DEBUG', 'False').lower() == 'true'
-        
-        logger.info(f"Starting Player Usage Service API on port {port}")
-        app.run(host='0.0.0.0', port=port, debug=debug)
-
-except ImportError as e:
-    logger.error(f"Flask not available - running in CLI mode only: {str(e)}")
-    app = None
-    def run_flask_app():
-        logger.error("Flask not installed. Install with: pip install flask flask-cors")
-        sys.exit(1)
+        },
+        "methodology": {
+            "rz_usage_share": "Player share of team RZ opportunities with 2+ plays filter, no 2-pt conversions",
+            "td_share": "Player share of team TDs (rush + receiving)",
+            "notes": "Uses player IDs to avoid name collisions, accumulates across position types"
+        }
+    })
 
 if __name__ == '__main__':
     # Railway provides PORT environment variable

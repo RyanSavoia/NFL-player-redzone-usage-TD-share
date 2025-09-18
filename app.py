@@ -3,6 +3,9 @@ import nfl_data_py as nfl
 import pandas as pd
 import json
 import os
+import schedule
+import time
+import threading
 from datetime import datetime
 
 app = Flask(__name__)
@@ -247,6 +250,34 @@ class PlayerUsageService:
 # Initialize service
 player_service = PlayerUsageService()
 
+def refresh_data_job():
+    """Scheduled job to refresh data daily"""
+    try:
+        print("Starting scheduled data refresh...")
+        global player_service
+        player_service = PlayerUsageService()  # Reset service to reload data
+        print("Scheduled data refresh completed successfully")
+    except Exception as e:
+        print(f"Scheduled data refresh failed: {str(e)}")
+
+def run_scheduler():
+    """Run the scheduler in a separate thread"""
+    while True:
+        try:
+            schedule.run_pending()
+            time.sleep(60)  # Check every minute
+        except Exception as e:
+            print(f"Scheduler error: {str(e)}")
+            time.sleep(60)
+
+# Schedule daily refresh at 6 AM UTC
+schedule.every().day.at("06:00").do(refresh_data_job)
+
+# Start scheduler in background thread
+scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+scheduler_thread.start()
+print("Background scheduler started - daily refresh at 6:00 AM UTC")
+
 @app.route('/player-usage', methods=['GET'])
 def get_player_usage():
     """Get player usage data for all teams or specific team"""
@@ -308,7 +339,9 @@ def health_check():
         "status": "healthy",
         "service": "Player Usage Service",
         "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        "data_loaded": player_service.data_loaded if player_service else False
+        "data_loaded": player_service.data_loaded if player_service else False,
+        "scheduled_refresh": "Daily at 6:00 AM UTC",
+        "next_refresh": schedule.next_run().strftime('%Y-%m-%d %H:%M:%S UTC') if schedule.jobs else None
     })
 
 @app.route('/', methods=['GET'])

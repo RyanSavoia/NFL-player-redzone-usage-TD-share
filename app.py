@@ -29,7 +29,8 @@ class PlayerUsageService:
                 # Create empty DataFrame to prevent crashes
                 self.pbp_data = pd.DataFrame()
                 self.data_loaded = True
-                raise
+                # Don't re-raise the exception, just continue with empty data
+                return
     
     def get_player_rz_usage_share(self, team):
         """
@@ -209,7 +210,7 @@ class PlayerUsageService:
         try:
             self.load_nfl_data()
             
-            if self.pbp_data.empty:
+            if self.pbp_data is None or self.pbp_data.empty:
                 return {
                     'error': 'No NFL data available',
                     'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -217,7 +218,14 @@ class PlayerUsageService:
                 }
             
             # Get all unique teams from current season
-            teams = sorted(self.pbp_data['posteam'].dropna().unique())
+            try:
+                teams = sorted([team for team in self.pbp_data['posteam'].dropna().unique() if pd.notna(team)])
+            except Exception as e:
+                return {
+                    'error': f'Could not extract teams: {str(e)}',
+                    'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'teams': {}
+                }
             
             all_teams_data = {
                 'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -231,10 +239,20 @@ class PlayerUsageService:
             }
             
             for team in teams:
-                print(f"Processing {team}...")
-                team_data = self.get_team_player_usage(team)
-                all_teams_data['teams'][team] = team_data
-                all_teams_data['total_teams_processed'] += 1
+                try:
+                    print(f"Processing {team}...")
+                    team_data = self.get_team_player_usage(team)
+                    all_teams_data['teams'][team] = team_data
+                    all_teams_data['total_teams_processed'] += 1
+                except Exception as e:
+                    print(f"Error processing team {team}: {str(e)}")
+                    all_teams_data['teams'][team] = {
+                        'team': team,
+                        'error': str(e),
+                        'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'players': {}
+                    }
+                    continue
             
             print(f"Completed analysis for {len(teams)} teams")
             return all_teams_data

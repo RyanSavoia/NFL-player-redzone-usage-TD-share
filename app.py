@@ -328,8 +328,15 @@ def run_scheduler():
             logger.error(f"Scheduler error: {str(e)}")
             time.sleep(60)
 
-# Initialize service
-player_service = PlayerUsageService()
+# Initialize service lazily - don't load data at import time
+player_service = None
+
+def get_service():
+    """Get or create the player service instance"""
+    global player_service
+    if player_service is None:
+        player_service = PlayerUsageService()
+    return player_service
 
 # Schedule daily refresh at 6 AM UTC
 schedule.every().day.at("06:00").do(refresh_data_job)
@@ -350,14 +357,15 @@ def get_player_usage():
     """Get player usage data for all teams or specific team"""
     try:
         team = request.args.get('team')  # Optional team parameter
+        service = get_service()  # Lazy load service
         
         if team:
             # Get data for specific team
-            team_data = player_service.get_team_player_usage(team.upper())
+            team_data = service.get_team_player_usage(team.upper())
             return jsonify(team_data)
         else:
             # Get data for all teams
-            all_data = player_service.get_all_teams_usage()
+            all_data = service.get_all_teams_usage()
             return jsonify(all_data)
             
     except Exception as e:
@@ -371,7 +379,8 @@ def get_player_usage():
 def get_team_player_usage_route(team):
     """Get player usage data for a specific team"""
     try:
-        team_data = player_service.get_team_player_usage(team.upper())
+        service = get_service()  # Lazy load service
+        team_data = service.get_team_player_usage(team.upper())
         return jsonify(team_data)
     except Exception as e:
         logger.error(f"Error in team player usage endpoint for {team}: {str(e)}")
@@ -404,23 +413,39 @@ def refresh_data():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({
-        "status": "healthy" if player_service.data_loaded else "degraded",
-        "service": "Player Usage Service",
-        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        "data_loaded": player_service.data_loaded if player_service else False,
-        "scheduled_refresh": "Daily at 6:00 AM UTC",
-        "next_refresh": schedule.next_run().strftime('%Y-%m-%d %H:%M:%S UTC') if schedule.jobs else None
-    })
+    try:
+        service = get_service() if player_service else None
+        return jsonify({
+            "status": "healthy" if service and service.data_loaded else "ready",
+            "service": "Player Usage Service",
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "data_loaded": service.data_loaded if service else False,
+            "scheduled_refresh": "Daily at 6:00 AM UTC",
+            "next_refresh": schedule.next_run().strftime('%Y-%m-%d %H:%M:%S UTC') if schedule.jobs else None
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "ready",
+            "service": "Player Usage Service", 
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "data_loaded": False,
+            "error": str(e)
+        })
 
 @app.route('/', methods=['GET'])
 def root():
     """API documentation"""
+    try:
+        service = get_service() if player_service else None
+        data_loaded = service.data_loaded if service else False
+    except:
+        data_loaded = False
+        
     return jsonify({
         "service": "Player Usage Service",
         "description": "Calculates player red zone usage shares and TD shares following GPT guidelines",
         "status": "running",
-        "data_loaded": player_service.data_loaded if player_service else False,
+        "data_loaded": data_loaded,
         "endpoints": {
             "/player-usage": {
                 "method": "GET",

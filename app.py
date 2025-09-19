@@ -2,59 +2,44 @@ import nfl_data_py as nfl
 import pandas as pd
 import json
 import os
-import schedule
-import time
-import threading
-from datetime import datetime
 import logging
-import sys
+from datetime import datetime
+from flask import Flask, jsonify, request
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class PlayerUsageService:
+app = Flask(__name__)
+
+class PlayerUsageAnalyzer:
     def __init__(self):
-        """Service to calculate player red zone usage and TD shares"""
+        """Initialize the Player Usage Analyzer"""
         self.pbp_data = None
         self.data_loaded = False
         
+    def load_data(self):
+        """Load NFL play-by-play data"""
         try:
-            self.load_nfl_data()
-            self.data_loaded = True
-            logger.info("Successfully initialized PlayerUsageService")
-        except Exception as e:
-            logger.error(f"Failed to initialize PlayerUsageService: {str(e)}")
-            self.data_loaded = False
-    
-    def load_nfl_data(self):
-        """Load current NFL play-by-play data with error handling"""
-        if not self.data_loaded:
             logger.info("Loading 2025 NFL play-by-play data...")
-            try:
-                self.pbp_data = nfl.import_pbp_data([2025])
-                
-                if self.pbp_data.empty:
-                    raise ValueError("No 2025 NFL data available")
-                
-                logger.info(f"Successfully loaded {len(self.pbp_data)} total plays")
-                self.data_loaded = True
-                
-            except Exception as e:
-                logger.error(f"Error loading NFL data: {str(e)}")
-                # Create empty DataFrame to prevent crashes
-                self.pbp_data = pd.DataFrame()
-                self.data_loaded = False
-                raise
+            self.pbp_data = nfl.import_pbp_data([2025])
+            
+            if self.pbp_data.empty:
+                raise ValueError("No 2025 NFL data available")
+            
+            self.data_loaded = True
+            logger.info(f"Successfully loaded {len(self.pbp_data)} total plays")
+            
+        except Exception as e:
+            logger.error(f"Error loading NFL data: {str(e)}")
+            self.pbp_data = pd.DataFrame()
+            self.data_loaded = False
+            raise
     
-    def get_player_rz_usage_share(self, team):
-        """
-        Get player red zone usage shares with 2+ plays filter and no 2-pt conversions
-        Following GPT's exact specifications
-        """
+    def get_team_rz_usage(self, team):
+        """Get red zone usage shares for a team"""
         try:
             if not self.data_loaded or self.pbp_data.empty:
-                logger.warning(f"No data available for {team} RZ usage analysis")
                 return {}
             
             # Filter for red zone plays, excluding 2-point conversions
@@ -62,14 +47,13 @@ class PlayerUsageService:
                 (self.pbp_data['posteam'] == team) & 
                 (self.pbp_data['yardline_100'] <= 20) & 
                 ((self.pbp_data['rush'] == 1) | (self.pbp_data['pass'] == 1)) &
-                (self.pbp_data['two_point_attempt'] != 1)  # Exclude 2-pt attempts
+                (self.pbp_data['two_point_attempt'] != 1)
             ].copy()
             
             if rz_data.empty:
-                logger.info(f"No red zone data found for {team}")
                 return {}
             
-            # Apply 2+ plays filter per drive (GPT's requirement)
+            # Apply 2+ plays filter per drive
             filtered_plays = []
             for game_id in rz_data['game_id'].unique():
                 if pd.isna(game_id):
@@ -79,63 +63,52 @@ class PlayerUsageService:
                     if pd.isna(drive_id):
                         continue
                     drive_plays = game_data[game_data['fixed_drive'] == drive_id]
-                    if len(drive_plays) >= 2:  # 2+ plays filter
+                    if len(drive_plays) >= 2:
                         filtered_plays.append(drive_plays)
             
             if not filtered_plays:
-                logger.info(f"No qualifying red zone drives (2+ plays) for {team}")
                 return {}
             
             rz_filtered = pd.concat(filtered_plays, ignore_index=True)
             total_rz_plays = len(rz_filtered)
             usage_shares = {}
             
-            # Accumulate rushing usage by player_id then add names (GPT's approach)
+            # Process rushing plays
             rush_data = rz_filtered[rz_filtered['rush'] == 1]
             if not rush_data.empty:
                 rush_counts = rush_data['rusher_player_id'].value_counts()
                 for player_id, count in rush_counts.items():
                     if pd.notna(player_id):
                         share = count / total_rz_plays
-                        # Get player name
                         player_name_series = rush_data[rush_data['rusher_player_id'] == player_id]['rusher_player_name']
                         if not player_name_series.empty:
                             player_name = player_name_series.iloc[0]
                             if pd.notna(player_name):
-                                if player_name in usage_shares:
-                                    usage_shares[player_name] += share
-                                else:
-                                    usage_shares[player_name] = share
+                                usage_shares[player_name] = usage_shares.get(player_name, 0) + share
             
-            # Accumulate receiving usage by player_id then add names
+            # Process passing plays
             pass_data = rz_filtered[rz_filtered['pass'] == 1]
             if not pass_data.empty:
                 target_counts = pass_data['receiver_player_id'].value_counts()
                 for player_id, count in target_counts.items():
                     if pd.notna(player_id):
                         share = count / total_rz_plays
-                        # Get player name
                         player_name_series = pass_data[pass_data['receiver_player_id'] == player_id]['receiver_player_name']
                         if not player_name_series.empty:
                             player_name = player_name_series.iloc[0]
                             if pd.notna(player_name):
-                                if player_name in usage_shares:
-                                    usage_shares[player_name] += share
-                                else:
-                                    usage_shares[player_name] = share
+                                usage_shares[player_name] = usage_shares.get(player_name, 0) + share
             
-            logger.info(f"Calculated RZ usage for {len(usage_shares)} players on {team}")
             return usage_shares
             
         except Exception as e:
             logger.error(f"Error calculating RZ usage for {team}: {str(e)}")
             return {}
     
-    def get_player_td_share(self, team):
-        """Get player TD shares (accumulating rush + receiving TDs)"""
+    def get_team_td_shares(self, team):
+        """Get TD shares for a team"""
         try:
             if not self.data_loaded or self.pbp_data.empty:
-                logger.warning(f"No data available for {team} TD share analysis")
                 return {}
             
             td_data = self.pbp_data[
@@ -144,69 +117,58 @@ class PlayerUsageService:
             ].copy()
             
             if td_data.empty:
-                logger.info(f"No touchdown data found for {team}")
                 return {}
             
             total_tds = len(td_data)
             td_shares = {}
             
-            # Accumulate rushing TDs by player_id then add names (GPT's approach)
+            # Process rushing TDs
             rush_tds = td_data[td_data['rush'] == 1]
             if not rush_tds.empty:
                 rush_td_counts = rush_tds['rusher_player_id'].value_counts()
                 for player_id, count in rush_td_counts.items():
                     if pd.notna(player_id):
                         share = count / total_tds
-                        # Get player name
                         player_name_series = rush_tds[rush_tds['rusher_player_id'] == player_id]['rusher_player_name']
                         if not player_name_series.empty:
                             player_name = player_name_series.iloc[0]
                             if pd.notna(player_name):
-                                if player_name in td_shares:
-                                    td_shares[player_name] += share
-                                else:
-                                    td_shares[player_name] = share
+                                td_shares[player_name] = td_shares.get(player_name, 0) + share
             
-            # Accumulate receiving TDs by player_id then add names
+            # Process receiving TDs
             pass_tds = td_data[td_data['pass'] == 1]
             if not pass_tds.empty:
                 rec_td_counts = pass_tds['receiver_player_id'].value_counts()
                 for player_id, count in rec_td_counts.items():
                     if pd.notna(player_id):
                         share = count / total_tds
-                        # Get player name
                         player_name_series = pass_tds[pass_tds['receiver_player_id'] == player_id]['receiver_player_name']
                         if not player_name_series.empty:
                             player_name = player_name_series.iloc[0]
                             if pd.notna(player_name):
-                                if player_name in td_shares:
-                                    td_shares[player_name] += share
-                                else:
-                                    td_shares[player_name] = share
+                                td_shares[player_name] = td_shares.get(player_name, 0) + share
             
-            logger.info(f"Calculated TD shares for {len(td_shares)} players on {team}")
             return td_shares
             
         except Exception as e:
             logger.error(f"Error calculating TD shares for {team}: {str(e)}")
             return {}
     
-    def get_team_player_usage(self, team):
-        """Get combined player usage data for a team"""
+    def analyze_team(self, team):
+        """Analyze a single team's player usage"""
         try:
             logger.info(f"Analyzing player usage for {team}")
             
-            rz_usage = self.get_player_rz_usage_share(team)
-            td_shares = self.get_player_td_share(team)
+            rz_usage = self.get_team_rz_usage(team)
+            td_shares = self.get_team_td_shares(team)
             
-            # Combine all players mentioned in either metric
+            # Combine all players
             all_players = set(rz_usage.keys()) | set(td_shares.keys())
             
             team_data = {
                 'team': team,
                 'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'players': {},
-                'total_players': len(all_players)
+                'players': {}
             }
             
             for player in all_players:
@@ -218,156 +180,91 @@ class PlayerUsageService:
                     'td_share': round(td_share, 4)
                 }
             
-            # Sort players by combined usage (RZ usage + TD share)
+            # Sort by combined usage
             team_data['players'] = dict(sorted(
                 team_data['players'].items(),
                 key=lambda x: x[1]['rz_usage_share'] + x[1]['td_share'],
                 reverse=True
             ))
             
-            logger.info(f"Successfully analyzed {len(all_players)} players for {team}")
             return team_data
             
         except Exception as e:
-            logger.error(f"Error getting team player usage for {team}: {str(e)}")
-            return {
-                'team': team,
-                'error': str(e),
-                'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'players': {}
-            }
+            logger.error(f"Error analyzing team {team}: {str(e)}")
+            return None
     
-    def get_all_teams_usage(self):
-        """Get player usage data for all 32 NFL teams"""
+    def analyze_all_teams(self):
+        """Analyze all NFL teams"""
         try:
             if not self.data_loaded:
-                self.load_nfl_data()
+                self.load_data()
             
-            if not self.data_loaded or self.pbp_data is None or self.pbp_data.empty:
-                logger.error("No NFL data available for analysis")
-                return {
-                    'error': 'No NFL data available',
-                    'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'teams': {}
-                }
+            if not self.data_loaded:
+                return None
             
-            # Get all unique teams from current season
-            try:
-                unique_teams = self.pbp_data['posteam'].dropna().unique()
-                teams = sorted([team for team in unique_teams if pd.notna(team)])
-                logger.info(f"Found {len(teams)} teams to analyze")
-            except Exception as e:
-                logger.error(f"Could not extract teams: {str(e)}")
-                return {
-                    'error': f'Could not extract teams: {str(e)}',
-                    'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'teams': {}
-                }
+            # Get all teams
+            unique_teams = self.pbp_data['posteam'].dropna().unique()
+            teams = sorted([team for team in unique_teams if pd.notna(team)])
             
-            all_teams_data = {
-                'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'methodology': {
-                    'rz_usage_share': 'Player share of team red zone opportunities (rush attempts + targets) with 2+ plays filter, excluding 2-pt conversions',
-                    'td_share': 'Player share of team touchdowns (rushing + receiving)',
-                    'calculation': 'Uses player IDs to avoid name collisions, accumulates across rush and receiving'
-                },
-                'teams': {},
-                'total_teams_processed': 0,
-                'successful_teams': 0
-            }
-            
-            for team in teams:
-                try:
-                    logger.info(f"Processing {team}...")
-                    team_data = self.get_team_player_usage(team)
-                    all_teams_data['teams'][team] = team_data
-                    all_teams_data['total_teams_processed'] += 1
-                    
-                    if 'error' not in team_data:
-                        all_teams_data['successful_teams'] += 1
-                        
-                except Exception as e:
-                    logger.error(f"Error processing team {team}: {str(e)}")
-                    all_teams_data['teams'][team] = {
-                        'team': team,
-                        'error': str(e),
-                        'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        'players': {}
-                    }
-                    all_teams_data['total_teams_processed'] += 1
-                    continue
-            
-            logger.info(f"Completed analysis for {all_teams_data['successful_teams']}/{len(teams)} teams")
-            return all_teams_data
-            
-        except Exception as e:
-            logger.error(f"Error in get_all_teams_usage: {str(e)}")
-            return {
-                'error': str(e),
+            results = {
                 'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'teams': {}
             }
-
-def refresh_data_job():
-    """Scheduled job to refresh data daily"""
-    try:
-        logger.info("Starting scheduled data refresh...")
-        global player_service
-        player_service = PlayerUsageService()  # Reset service to reload data
-        logger.info("Scheduled data refresh completed successfully")
-    except Exception as e:
-        logger.error(f"Scheduled data refresh failed: {str(e)}")
-
-def run_scheduler():
-    """Run the scheduler in a separate thread"""
-    while True:
-        try:
-            schedule.run_pending()
-            time.sleep(60)  # Check every minute
+            
+            for team in teams:
+                team_data = self.analyze_team(team)
+                if team_data:
+                    results['teams'][team] = team_data
+            
+            return results
+            
         except Exception as e:
-            logger.error(f"Scheduler error: {str(e)}")
-            time.sleep(60)
+            logger.error(f"Error in analyze_all_teams: {str(e)}")
+            return None
 
-# Initialize service lazily - don't load data at import time
-player_service = None
+# Global analyzer instance
+analyzer = None
 
-def get_service():
-    """Get or create the player service instance"""
-    global player_service
-    if player_service is None:
-        player_service = PlayerUsageService()
-    return player_service
+def get_analyzer():
+    """Get or create analyzer instance"""
+    global analyzer
+    if analyzer is None:
+        analyzer = PlayerUsageAnalyzer()
+    return analyzer
 
-# Schedule daily refresh at 6 AM UTC
-schedule.every().day.at("06:00").do(refresh_data_job)
-
-# Start scheduler in background thread
-scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-scheduler_thread.start()
-logger.info("Background scheduler started - daily refresh at 6:00 AM UTC")
-
-from flask import Flask, jsonify, request
-from flask_cors import CORS
-
-app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
-    
-@app.route('/player-usage', methods=['GET'])
-def get_player_usage():
-    """Get player usage data for all teams or specific team"""
+def run_analysis(team=None):
+    """Run analysis function"""
     try:
-        team = request.args.get('team')  # Optional team parameter
-        service = get_service()  # Lazy load service
+        current_analyzer = get_analyzer()
         
         if team:
-            # Get data for specific team
-            team_data = service.get_team_player_usage(team.upper())
-            return jsonify(team_data)
+            return current_analyzer.analyze_team(team)
         else:
-            # Get data for all teams
-            all_data = service.get_all_teams_usage()
-            return jsonify(all_data)
+            return current_analyzer.analyze_all_teams()
             
+    except Exception as e:
+        logger.error(f"Analysis execution failed: {str(e)}")
+        return None
+
+@app.route('/player-usage', methods=['GET'])
+def get_player_usage():
+    """Get player usage data"""
+    try:
+        team = request.args.get('team')
+        
+        if team:
+            result = run_analysis(team.upper())
+        else:
+            result = run_analysis()
+        
+        if result is None:
+            return jsonify({
+                "error": "Analysis failed",
+                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }), 500
+        
+        return jsonify(result)
+        
     except Exception as e:
         logger.error(f"Error in player usage endpoint: {str(e)}")
         return jsonify({
@@ -376,37 +273,24 @@ def get_player_usage():
         }), 500
 
 @app.route('/player-usage/<team>', methods=['GET'])
-def get_team_player_usage_route(team):
-    """Get player usage data for a specific team"""
+def get_team_player_usage(team):
+    """Get player usage data for specific team"""
     try:
-        service = get_service()  # Lazy load service
-        team_data = service.get_team_player_usage(team.upper())
-        return jsonify(team_data)
+        result = run_analysis(team.upper())
+        
+        if result is None:
+            return jsonify({
+                "error": f"Analysis failed for {team}",
+                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }), 500
+        
+        return jsonify(result)
+        
     except Exception as e:
-        logger.error(f"Error in team player usage endpoint for {team}: {str(e)}")
+        logger.error(f"Error in team endpoint for {team}: {str(e)}")
         return jsonify({
             "error": str(e),
             "team": team,
-            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }), 500
-
-@app.route('/refresh', methods=['POST'])
-def refresh_data():
-    """Manual data refresh endpoint"""
-    try:
-        global player_service
-        player_service = PlayerUsageService()  # Reset service to reload data
-        return jsonify({
-            "status": "success",
-            "message": "Data refreshed successfully",
-            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "data_loaded": player_service.data_loaded
-        })
-    except Exception as e:
-        logger.error(f"Error in refresh endpoint: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e),
             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }), 500
 
@@ -414,68 +298,34 @@ def refresh_data():
 def health_check():
     """Health check endpoint"""
     try:
-        service = get_service() if player_service else None
+        current_analyzer = get_analyzer()
         return jsonify({
-            "status": "healthy" if service and service.data_loaded else "ready",
+            "status": "healthy",
             "service": "Player Usage Service",
             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "data_loaded": service.data_loaded if service else False,
-            "scheduled_refresh": "Daily at 6:00 AM UTC",
-            "next_refresh": schedule.next_run().strftime('%Y-%m-%d %H:%M:%S UTC') if schedule.jobs else None
+            "data_loaded": current_analyzer.data_loaded if current_analyzer else False
         })
     except Exception as e:
         return jsonify({
             "status": "ready",
-            "service": "Player Usage Service", 
+            "service": "Player Usage Service",
             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "data_loaded": False,
             "error": str(e)
         })
 
 @app.route('/', methods=['GET'])
 def root():
     """API documentation"""
-    try:
-        service = get_service() if player_service else None
-        data_loaded = service.data_loaded if service else False
-    except:
-        data_loaded = False
-        
     return jsonify({
         "service": "Player Usage Service",
-        "description": "Calculates player red zone usage shares and TD shares following GPT guidelines",
-        "status": "running",
-        "data_loaded": data_loaded,
+        "description": "NFL player red zone usage and TD share analysis",
         "endpoints": {
-            "/player-usage": {
-                "method": "GET",
-                "description": "Get all teams player usage data",
-                "parameters": {
-                    "team": "Optional - get data for specific team (e.g., ?team=KC)"
-                }
-            },
-            "/player-usage/<team>": {
-                "method": "GET",
-                "description": "Get player usage data for specific team",
-                "example": "/player-usage/KC"
-            },
-            "/refresh": {
-                "method": "POST",
-                "description": "Manual data refresh"
-            },
-            "/health": {
-                "method": "GET",
-                "description": "Health check"
-            }
-        },
-        "methodology": {
-            "rz_usage_share": "Player share of team RZ opportunities with 2+ plays filter, no 2-pt conversions",
-            "td_share": "Player share of team TDs (rush + receiving)",
-            "notes": "Uses player IDs to avoid name collisions, accumulates across position types"
+            "/player-usage": "Get all teams (or ?team=KC for specific team)",
+            "/player-usage/<team>": "Get specific team data",
+            "/health": "Health check"
         }
     })
 
 if __name__ == '__main__':
-    # Railway provides PORT environment variable
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)

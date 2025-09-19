@@ -83,6 +83,23 @@ class PlayerUsageService:
             return {"error": "Data not available", "teams": {}}
             
         try:
+            # Handle empty data like your working code
+            if self.pbp_data.empty:
+                logger.info("Empty dataset, returning empty teams")
+                return {
+                    'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'teams': {}
+                }
+            
+            # Check if posteam column exists
+            if 'posteam' not in self.pbp_data.columns:
+                logger.warning("No 'posteam' column found in data")
+                return {
+                    'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'teams': {},
+                    'available_columns': list(self.pbp_data.columns)[:10]  # First 10 columns for debugging
+                }
+            
             teams = self.pbp_data['posteam'].dropna().unique()
             
             result = {
@@ -102,7 +119,11 @@ class PlayerUsageService:
             
         except Exception as e:
             logger.error(f"Error getting all teams: {str(e)}")
-            return {"error": str(e), "teams": {}}
+            return {
+                "error": str(e), 
+                "teams": {},
+                "data_shape": self.pbp_data.shape if hasattr(self, 'pbp_data') else "No data"
+            }
 
 # Global service
 service = PlayerUsageService()

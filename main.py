@@ -15,6 +15,10 @@ class PlayerUsageAnalyzer:
         """
         Initialize Player Usage Analyzer with the same pattern as working tools
         """
+        # Explicitly prevent 2024 data usage
+        if performance_year == 2024:
+            raise ValueError("2024 data is not allowed - this tool only works with 2025+ data")
+        
         self.performance_year = performance_year
         self.pbp_data = None
         self.data_loaded = False
@@ -30,11 +34,23 @@ class PlayerUsageAnalyzer:
     def load_data(self):
         """Load NFL data with error handling"""
         try:
+            # Double-check we're not loading 2024 data
+            if self.performance_year == 2024:
+                raise ValueError("2024 data is explicitly blocked - this tool only works with 2025+ data")
+            
             logger.info(f"Loading {self.performance_year} NFL play-by-play data...")
             self.pbp_data = nfl.import_pbp_data([self.performance_year])
             
             if self.pbp_data.empty:
                 raise ValueError(f"No data available for {self.performance_year}")
+            
+            # Additional safeguard: verify loaded data is from correct year
+            if 'season' in self.pbp_data.columns:
+                loaded_years = self.pbp_data['season'].unique()
+                if 2024 in loaded_years:
+                    raise ValueError("Detected 2024 data in loaded dataset - this is not allowed")
+                if self.performance_year not in loaded_years:
+                    raise ValueError(f"Loaded data does not contain {self.performance_year} season data")
                 
             logger.info(f"Data loaded successfully: {len(self.pbp_data)} total plays")
             
